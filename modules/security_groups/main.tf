@@ -131,6 +131,24 @@ resource "aws_security_group" "monitoring" {
     description = "Allow all UDP from Apps VPC"
   }
 
+  # Allow Prometheus port 9090 from Monitoring VPC (for Grafana to query Prometheus)
+  ingress {
+    from_port   = 9090
+    to_port     = 9090
+    protocol    = "tcp"
+    cidr_blocks = [var.monitoring_vpc_cidr]
+    description = "Allow Prometheus from Monitoring VPC"
+  }
+
+  # Allow Grafana port 3000 from internet
+  ingress {
+    from_port   = 3000
+    to_port     = 3000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow Grafana from internet"
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
