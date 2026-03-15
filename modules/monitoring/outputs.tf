@@ -47,3 +47,5 @@ output "grafana_default_credentials" {
   description = "Grafana default credentials (change after first login)"
   value       = "admin / admin"
 }
+
+# test
