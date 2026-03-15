@@ -44,10 +44,24 @@ datasources:
     access: proxy
     url: http://${prometheus_ip}:9090
     jsonData:
-      timeInterval: 30s
+      timeInterval: 10s
     editable: true
     isDefault: true
+    testData:
+      enabled: false
 EOF
+
+# Also ensure the file is created with proper syntax
+cat > /etc/grafana/provisioning/datasources/prometheus.yml << 'EODF'
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://${prometheus_ip}:9090
+    isDefault: true
+    editable: true
+EODF
 
 # Create dashboard provisioning config
 cat > /etc/grafana/provisioning/dashboards/dashboards.yml << 'EOF'
