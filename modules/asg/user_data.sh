@@ -13,11 +13,53 @@ amazon-linux-extras install docker -y >> /var/log/user-data.log 2>&1 || echo "do
 systemctl start docker >> /var/log/user-data.log 2>&1 || echo "docker start failed" >> /var/log/user-data.log
 systemctl enable docker >> /var/log/user-data.log 2>&1 || echo "docker enable failed" >> /var/log/user-data.log
 
+# Install and start SSM Agent for remote access
+echo "Installing SSM Agent..." >> /var/log/user-data.log 2>&1
+yum install -y amazon-ssm-agent >> /var/log/user-data.log 2>&1
+systemctl enable amazon-ssm-agent >> /var/log/user-data.log 2>&1
+systemctl start amazon-ssm-agent >> /var/log/user-data.log 2>&1
+echo "SSM Agent started" >> /var/log/user-data.log 2>&1
+
 # Install AWS CLI v2
 curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" >> /var/log/user-data.log 2>&1
 unzip awscliv2.zip >> /var/log/user-data.log 2>&1
 ./aws/install >> /var/log/user-data.log 2>&1
 rm -rf aws awscliv2.zip >> /var/log/user-data.log 2>&1
+
+# Install Node Exporter for Prometheus monitoring
+echo "Installing Node Exporter..." >> /var/log/user-data.log 2>&1
+yum install -y node_exporter >> /var/log/user-data.log 2>&1 || {
+  NODE_EXPORTER_VERSION="1.7.0"
+  NODE_EXPORTER_BINARY="node_exporter-${NODE_EXPORTER_VERSION}.linux-amd64"
+  cd /tmp
+  curl -L "https://github.com/prometheus/node_exporter/releases/download/v${NODE_EXPORTER_VERSION}/${NODE_EXPORTER_BINARY}.tar.gz" -o ${NODE_EXPORTER_BINARY}.tar.gz >> /var/log/user-data.log 2>&1
+  tar xzf ${NODE_EXPORTER_BINARY}.tar.gz >> /var/log/user-data.log 2>&1
+  cp ${NODE_EXPORTER_BINARY}/node_exporter /usr/local/bin/ >> /var/log/user-data.log 2>&1
+  chmod +x /usr/local/bin/node_exporter >> /var/log/user-data.log 2>&1
+  rm -rf ${NODE_EXPORTER_BINARY}* >> /var/log/user-data.log 2>&1
+}
+
+# Create Node Exporter systemd service
+cat > /etc/systemd/system/node-exporter.service << 'NODEEOF'
+[Unit]
+Description=Node Exporter
+After=network.target
+
+[Service]
+Type=simple
+User=nobody
+ExecStart=/usr/local/bin/node_exporter --collector.uname.release=true
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+NODEEOF
+
+systemctl daemon-reload >> /var/log/user-data.log 2>&1
+systemctl start node-exporter >> /var/log/user-data.log 2>&1
+systemctl enable node-exporter >> /var/log/user-data.log 2>&1
+echo "Node Exporter started" >> /var/log/user-data.log 2>&1
 
 # Create deployment script
 cat > /usr/local/bin/deploy-docker.sh << 'EOF'
@@ -117,15 +159,22 @@ LOG_FILE=/var/log/deploy-docker.log
   echo "Parameter name: $PARAM_NAME"
   
   # Get image URI from Parameter Store
-  IMAGE_URI=$(aws ssm get-parameter --name "$PARAM_NAME" --region "$REGION" --query 'Parameter.Value' --output text 2>/dev/null)
+  echo "Attempting to retrieve image URI from: $PARAM_NAME"
+  IMAGE_URI=$(aws ssm get-parameter --name "$PARAM_NAME" --region "$REGION" --query 'Parameter.Value' --output text 2>&1)
+  IMAGE_URI_EXIT=$?
   
-  if [ -z "$IMAGE_URI" ] || [[ "$IMAGE_URI" == "None" ]]; then
+  echo "SSM get-parameter exit code: $IMAGE_URI_EXIT"
+  echo "Retrieved IMAGE_URI: $IMAGE_URI"
+  
+  if [ $IMAGE_URI_EXIT -ne 0 ] || [ -z "$IMAGE_URI" ] || [[ "$IMAGE_URI" == "None" ]]; then
     echo "WARNING: Failed to get image URI from SSM Parameter Store: $PARAM_NAME"
+    echo "SSM error output: $IMAGE_URI"
     echo "Using default latest images..."
     IMAGE_URI="697568497210.dkr.ecr.$REGION.amazonaws.com/monitoring-apps-$APP_NAME:latest"
+    echo "Fallback IMAGE_URI: $IMAGE_URI"
   fi
   
-  echo "Image URI: $IMAGE_URI"
+  echo "Final Image URI: $IMAGE_URI"
   
   # Get ECR registry
   ECR_REGISTRY=$(echo $IMAGE_URI | cut -d'/' -f1)
@@ -146,11 +195,16 @@ LOG_FILE=/var/log/deploy-docker.log
   # Pull and run new image
   echo "Pulling image: $IMAGE_URI"
   docker pull "$IMAGE_URI" >> $LOG_FILE 2>&1
+  PULL_EXIT=$?
   
-  if [ $? -ne 0 ]; then
-    echo "ERROR: Failed to pull image: $IMAGE_URI"
+  if [ $PULL_EXIT -ne 0 ]; then
+    echo "ERROR: Failed to pull image: $IMAGE_URI (exit code: $PULL_EXIT)"
+    docker images >> $LOG_FILE 2>&1
     exit 1
   fi
+  
+  echo "Image pull successful (exit code: $PULL_EXIT)"
+  docker images | grep "$APP_NAME" >> $LOG_FILE 2>&1
   
   echo "Running container: $APP_NAME on port $APP_PORT"
   
@@ -158,12 +212,13 @@ LOG_FILE=/var/log/deploy-docker.log
   if [ "$APP_NAME" == "api" ]; then
     echo "Retrieving database credentials from SSM Parameter Store..."
     
-    DB_SERVER=$(aws ssm get-parameter --name "/apps/api/db-server" --region "$REGION" --query 'Parameter.Value' --output text 2>/dev/null || echo "localhost")
-    DB_NAME=$(aws ssm get-parameter --name "/apps/api/db-name" --region "$REGION" --query 'Parameter.Value' --output text 2>/dev/null || echo "appdb")
-    DB_USER=$(aws ssm get-parameter --name "/apps/api/db-user" --region "$REGION" --query 'Parameter.Value' --output text 2>/dev/null || echo "postgres")
-    DB_PASSWORD=$(aws ssm get-parameter --name "/apps/api/db-password" --region "$REGION" --with-decryption --query 'Parameter.Value' --output text 2>/dev/null || echo "password")
+    DB_SERVER=$(aws ssm get-parameter --name "/apps/rds/host" --region "$REGION" --query 'Parameter.Value' --output text 2>/dev/null || echo "localhost")
+    DB_PORT=$(aws ssm get-parameter --name "/apps/rds/port" --region "$REGION" --query 'Parameter.Value' --output text 2>/dev/null || echo "5432")
+    DB_NAME=$(aws ssm get-parameter --name "/apps/rds/dbname" --region "$REGION" --query 'Parameter.Value' --output text 2>/dev/null || echo "appdb")
+    DB_USER=$(aws ssm get-parameter --name "/apps/rds/username" --region "$REGION" --query 'Parameter.Value' --output text 2>/dev/null || echo "postgres")
+    DB_PASSWORD=$(aws ssm get-parameter --name "/apps/rds/password" --region "$REGION" --with-decryption --query 'Parameter.Value' --output text 2>/dev/null || echo "password")
     
-    echo "DB Connection: host=$DB_SERVER, db=$DB_NAME, user=$DB_USER"
+    echo "DB Connection: host=$DB_SERVER:$DB_PORT, db=$DB_NAME, user=$DB_USER"
     echo "Running container with database credentials..."
     
     docker run -d \
@@ -171,6 +226,7 @@ LOG_FILE=/var/log/deploy-docker.log
       -p "$APP_PORT:$APP_PORT" \
       --restart=always \
       -e "DB_SERVER=$DB_SERVER" \
+      -e "DB_PORT=$DB_PORT" \
       -e "DB_NAME=$DB_NAME" \
       -e "DB_USER=$DB_USER" \
       -e "DB_PASSWORD=$DB_PASSWORD" \

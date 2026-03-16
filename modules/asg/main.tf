@@ -72,7 +72,9 @@ resource "aws_iam_role_policy" "ecr_and_ssm_policy" {
         Action = [
           "ecr:GetDownloadUrlForLayer",
           "ecr:BatchGetImage",
-          "ecr:GetAuthorizationToken"
+          "ecr:GetAuthorizationToken",
+          "ecr:DescribeImages",
+          "ecr:DescribeRepositories"
         ]
         Resource = "*"
       },

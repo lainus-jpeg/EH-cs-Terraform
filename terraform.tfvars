@@ -46,3 +46,7 @@ health_check_unhealthy_threshold   = 3
 
 # VPC Peering
 enable_vpc_peering = true
+
+# VPC Internet and NAT
+apps_enable_internet_gateway = true
+apps_enable_nat_gateway      = true
