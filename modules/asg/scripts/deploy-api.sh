@@ -47,11 +47,18 @@ log "Successfully pulled: $IMAGE_URI"
 
 # Get DB connection from Parameter Store
 log "Fetching database credentials from Parameter Store..."
-DB_URL=$(aws ssm get-parameter --name /apps/database-url --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "")
+DB_SERVER=$(aws ssm get-parameter --name /apps/api/DB_SERVER --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "")
+DB_PORT=$(aws ssm get-parameter --name /apps/api/DB_PORT --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "5432")
+DB_NAME=$(aws ssm get-parameter --name /apps/api/DB_NAME --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "appdb")
+DB_USER=$(aws ssm get-parameter --name /apps/api/DB_USER --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "postgres")
+DB_PASSWORD=$(aws ssm get-parameter --name /apps/api/DB_PASSWORD --with-decryption --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "")
 
-if [ -z "$DB_URL" ]; then
-    log "WARNING: Database URL not found in Parameter Store. Container will start but may not connect to DB."
+if [ -z "$DB_SERVER" ] || [ -z "$DB_PASSWORD" ]; then
+    log "WARNING: Database credentials not found in Parameter Store. Using fallback or container will not connect to DB."
 fi
+
+BUILD_URL="$DB_SERVER:$DB_PORT/$DB_NAME"
+log "Database connection: $DB_USER@$BUILD_URL"
 
 # Stop existing container if it's running
 if [ "$(docker ps -q -f name=$CONTAINER_NAME)" ]; then
@@ -66,7 +73,11 @@ docker run -d \
     --name $CONTAINER_NAME \
     --restart unless-stopped \
     -p $LOCAL_PORT:$CONTAINER_PORT \
-    -e DATABASE_URL="$DB_URL" \
+    -e DB_SERVER="$DB_SERVER" \
+    -e DB_PORT="$DB_PORT" \
+    -e DB_NAME="$DB_NAME" \
+    -e DB_USER="$DB_USER" \
+    -e DB_PASSWORD="$DB_PASSWORD" \
     -e NODE_ENV="production" \
     $IMAGE_URI
 

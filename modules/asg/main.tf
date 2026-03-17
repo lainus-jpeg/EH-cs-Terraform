@@ -175,7 +175,7 @@ resource "aws_autoscaling_group" "main" {
   }
 
   lifecycle {
-    create_before_destroy = true
+    create_before_destroy = false
   }
 
   depends_on = [aws_launch_template.main]

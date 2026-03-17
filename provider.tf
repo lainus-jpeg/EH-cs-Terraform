@@ -6,15 +6,6 @@ terraform {
       version = "~> 5.0"
     }
   }
-
-  # Remote state configuration
-  backend "s3" {
-    bucket         = "eh-cs1-terraform-state-697568497210"
-    key            = "dev/terraform.tfstate"
-    region         = "eu-central-1"
-    encrypt        = true
-    dynamodb_table = "terraform-locks"
-  }
 }
 
 provider "aws" {

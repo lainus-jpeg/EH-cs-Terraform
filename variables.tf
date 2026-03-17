@@ -202,3 +202,16 @@ variable "enable_vpc_peering" {
   type        = bool
   default     = true
 }
+
+# Apps VPC Gateway Variables
+variable "apps_enable_internet_gateway" {
+  description = "Enable Internet Gateway for Apps VPC"
+  type        = bool
+  default     = true
+}
+
+variable "apps_enable_nat_gateway" {
+  description = "Enable NAT Gateway for Apps VPC private subnets"
+  type        = bool
+  default     = true
+}

@@ -22,8 +22,8 @@ module "apps_vpc" {
 
   vpc_name              = "apps-vpc"
   vpc_cidr              = var.apps_vpc_cidr
-  enable_nat_gateway    = true
-  enable_internet_gateway = true
+  enable_nat_gateway    = var.apps_enable_nat_gateway
+  enable_internet_gateway = var.apps_enable_internet_gateway
   nat_gateway_subnet    = 0  # Deploy NAT Gateway in first (AZ1) public subnet only
   
   public_subnet_cidrs      = var.apps_public_subnet_cidrs
@@ -191,129 +191,129 @@ module "ecr" {
   environment = var.environment
 }
 
-# GitHub OIDC Provider
-data "tls_certificate" "github" {
-  url = "https://token.actions.githubusercontent.com"
-}
-
-resource "aws_iam_openid_connect_provider" "github" {
-  client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = [
-    data.tls_certificate.github.certificates[0].sha1_fingerprint,
-    "6938fd4d98bab03faadb97b34396831e3780aea1" # GitHub root certificate
-  ]
-  url             = "https://token.actions.githubusercontent.com"
-
-  tags = {
-    Name = "github-oidc"
-  }
-}
-
-# IAM Role for GitHub Actions to push to ECR
-resource "aws_iam_role" "github_actions" {
-  name = "github-actions-ecr-push"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = {
-          Federated = aws_iam_openid_connect_provider.github.arn
-        }
-        Action = "sts:AssumeRoleWithWebIdentity"
-        Condition = {
-          StringEquals = {
-            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          }
-          StringLike = {
-            "token.actions.githubusercontent.com:sub" = [
-              "repo:lainus-jpeg/EH-cs1-api:ref:refs/heads/main",
-              "repo:lainus-jpeg/EH-cs1-api:ref:refs/heads/develop",
-              "repo:lainus-jpeg/EH-cs1-frontend:ref:refs/heads/main",
-              "repo:lainus-jpeg/EH-cs1-frontend:ref:refs/heads/develop",
-              "repo:lainus-jpeg/EH-cs1-Terraform:ref:refs/heads/main"
-            ]
-          }
-        }
-      }
-    ]
-  })
-}
-
-# Policy for GitHub Actions to push to ECR
-resource "aws_iam_role_policy" "github_ecr_push" {
-  name = "github-actions-ecr-push-policy"
-  role = aws_iam_role.github_actions.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "ecr:GetAuthorizationToken"
-        ]
-        Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "ecr:BatchCheckLayerAvailability",
-          "ecr:GetDownloadUrlForLayer",
-          "ecr:BatchGetImage",
-          "ecr:PutImage",
-          "ecr:InitiateLayerUpload",
-          "ecr:UploadLayerPart",
-          "ecr:CompleteLayerUpload"
-        ]
-        Resource = [
-          module.ecr.frontend_repository_arn,
-          module.ecr.api_repository_arn
-        ]
-      }
-    ]
-  })
-}
-
-# Policy for GitHub Actions to manage Terraform state
-resource "aws_iam_role_policy" "github_terraform_state" {
-  name = "github-actions-terraform-state-policy"
-  role = aws_iam_role.github_actions.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "s3:ListBucket",
-          "s3:GetBucketVersioning"
-        ]
-        Resource = "arn:aws:s3:::eh-cs1-terraform-state-*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "s3:GetObject",
-          "s3:PutObject",
-          "s3:DeleteObject"
-        ]
-        Resource = "arn:aws:s3:::eh-cs1-terraform-state-*/*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "dynamodb:PutItem",
-          "dynamodb:GetItem",
-          "dynamodb:DeleteItem",
-          "dynamodb:DescribeTable"
-        ]
-        Resource = "arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/terraform-locks"
-      }
-    ]
-  })
-}
+# GitHub OIDC Provider - ALREADY EXISTS IN AWS, COMMENTED OUT TO PREVENT RECREATION
+# data "tls_certificate" "github" {
+#   url = "https://token.actions.githubusercontent.com"
+# }
+#
+# resource "aws_iam_openid_connect_provider" "github" {
+#   client_id_list  = ["sts.amazonaws.com"]
+#   thumbprint_list = [
+#     data.tls_certificate.github.certificates[0].sha1_fingerprint,
+#     "6938fd4d98bab03faadb97b34396831e3780aea1" # GitHub root certificate
+#   ]
+#   url             = "https://token.actions.githubusercontent.com"
+#
+#   tags = {
+#     Name = "github-oidc"
+#   }
+# }
+#
+# # IAM Role for GitHub Actions to push to ECR
+# resource "aws_iam_role" "github_actions" {
+#   name = "github-actions-ecr-push"
+#
+#   assume_role_policy = jsonencode({
+#     Version = "2012-10-17"
+#     Statement = [
+#       {
+#         Effect = "Allow"
+#         Principal = {
+#           Federated = aws_iam_openid_connect_provider.github.arn
+#         }
+#         Action = "sts:AssumeRoleWithWebIdentity"
+#         Condition = {
+#           StringEquals = {
+#             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+#           }
+#           StringLike = {
+#             "token.actions.githubusercontent.com:sub" = [
+#               "repo:lainus-jpeg/EH-cs1-api:ref:refs/heads/main",
+#               "repo:lainus-jpeg/EH-cs1-api:ref:refs/heads/develop",
+#               "repo:lainus-jpeg/EH-cs1-frontend:ref:refs/heads/main",
+#               "repo:lainus-jpeg/EH-cs1-frontend:ref:refs/heads/develop",
+#               "repo:lainus-jpeg/EH-cs1-Terraform:ref:refs/heads/main"
+#             ]
+#           }
+#         }
+#       }
+#     ]
+#   })
+# }
+#
+# # Policy for GitHub Actions to push to ECR
+# resource "aws_iam_role_policy" "github_ecr_push" {
+#   name = "github-actions-ecr-push-policy"
+#   role = aws_iam_role.github_actions.id
+#
+#   policy = jsonencode({
+#     Version = "2012-10-17"
+#     Statement = [
+#       {
+#         Effect = "Allow"
+#         Action = [
+#           "ecr:GetAuthorizationToken"
+#         ]
+#         Resource = "*"
+#       },
+#       {
+#         Effect = "Allow"
+#         Action = [
+#           "ecr:BatchCheckLayerAvailability",
+#           "ecr:GetDownloadUrlForLayer",
+#           "ecr:BatchGetImage",
+#           "ecr:PutImage",
+#           "ecr:InitiateLayerUpload",
+#           "ecr:UploadLayerPart",
+#           "ecr:CompleteLayerUpload"
+#         ]
+#         Resource = [
+#           module.ecr.frontend_repository_arn,
+#           module.ecr.api_repository_arn
+#         ]
+#       }
+#     ]
+#   })
+# }
+#
+# # Policy for GitHub Actions to manage Terraform state
+# resource "aws_iam_role_policy" "github_terraform_state" {
+#   name = "github-actions-terraform-state-policy"
+#   role = aws_iam_role.github_actions.id
+#
+#   policy = jsonencode({
+#     Version = "2012-10-17"
+#     Statement = [
+#       {
+#         Effect = "Allow"
+#         Action = [
+#           "s3:ListBucket",
+#           "s3:GetBucketVersioning"
+#         ]
+#         Resource = "arn:aws:s3:::eh-cs1-terraform-state-*"
+#       },
+#       {
+#         Effect = "Allow"
+#         Action = [
+#           "s3:GetObject",
+#           "s3:PutObject",
+#           "s3:DeleteObject"
+#         ]
+#         Resource = "arn:aws:s3:::eh-cs1-terraform-state-*/*"
+#       },
+#       {
+#         Effect = "Allow"
+#         Action = [
+#           "dynamodb:PutItem",
+#           "dynamodb:GetItem",
+#           "dynamodb:DeleteItem",
+#           "dynamodb:DescribeTable"
+#         ]
+#         Resource = "arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/terraform-locks"
+#       }
+#     ]
+#   })
+# }
 
 # IAM Role for EC2 to pull from ECR
 resource "aws_iam_role" "ec2_ecr_pull" {
@@ -360,35 +360,35 @@ resource "aws_ssm_parameter" "api_image_uri" {
   }
 }
 
-# Updated GitHub Actions policy to include deployment permissions
-resource "aws_iam_role_policy" "github_deployment" {
-  name = "github-actions-deployment-policy"
-  role = aws_iam_role.github_actions.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "ssm:PutParameter"
-        ]
-        Resource = [
-          aws_ssm_parameter.frontend_image_uri.arn,
-          aws_ssm_parameter.api_image_uri.arn
-        ]
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "autoscaling:StartInstanceRefresh",
-          "autoscaling:DescribeAutoScalingGroups"
-        ]
-        Resource = "*"
-      }
-    ]
-  })
-}
+# Updated GitHub Actions policy to include deployment permissions - COMMENTED OUT (OIDC provider already exists)
+# resource "aws_iam_role_policy" "github_deployment" {
+#   name = "github-actions-deployment-policy"
+#   role = aws_iam_role.github_actions.id
+#
+#   policy = jsonencode({
+#     Version = "2012-10-17"
+#     Statement = [
+#       {
+#         Effect = "Allow"
+#         Action = [
+#           "ssm:PutParameter"
+#         ]
+#         Resource = [
+#           aws_ssm_parameter.frontend_image_uri.arn,
+#           aws_ssm_parameter.api_image_uri.arn
+#         ]
+#       },
+#       {
+#         Effect = "Allow"
+#         Action = [
+#           "autoscaling:StartInstanceRefresh",
+#           "autoscaling:DescribeAutoScalingGroups"
+#         ]
+#         Resource = "*"
+#       }
+#     ]
+#   })
+# }
 
 # Policy update for EC2 to read from SSM Parameter Store
 resource "aws_iam_role_policy" "ec2_ssm_read" {

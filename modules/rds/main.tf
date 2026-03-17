@@ -27,57 +27,6 @@ resource "aws_secretsmanager_secret_version" "rds_password" {
   })
 }
 
-# Store RDS credentials in SSM Parameter Store for easy container access
-resource "aws_ssm_parameter" "rds_password" {
-  name  = "/apps/rds/password"
-  type  = "SecureString"
-  value = random_password.rds_password.result
-
-  tags = {
-    Name = "RDS-Password"
-  }
-}
-
-resource "aws_ssm_parameter" "rds_host" {
-  name  = "/apps/rds/host"
-  type  = "String"
-  value = aws_db_instance.main.address
-
-  tags = {
-    Name = "RDS-Host"
-  }
-}
-
-resource "aws_ssm_parameter" "rds_port" {
-  name  = "/apps/rds/port"
-  type  = "String"
-  value = tostring(aws_db_instance.main.port)
-
-  tags = {
-    Name = "RDS-Port"
-  }
-}
-
-resource "aws_ssm_parameter" "rds_username" {
-  name  = "/apps/rds/username"
-  type  = "String"
-  value = "postgres"
-
-  tags = {
-    Name = "RDS-Username"
-  }
-}
-
-resource "aws_ssm_parameter" "rds_dbname" {
-  name  = "/apps/rds/dbname"
-  type  = "String"
-  value = aws_db_instance.main.db_name
-
-  tags = {
-    Name = "RDS-DBName"
-  }
-}
-
 # DB Subnet Group
 resource "aws_db_subnet_group" "main" {
   name       = var.db_subnet_group_name

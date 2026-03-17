@@ -45,7 +45,7 @@ resource "aws_lb_target_group" "frontend" {
 # API Target Group
 resource "aws_lb_target_group" "api" {
   name_prefix = "api-"
-  port        = var.api_port
+  port        = 8080
   protocol    = "HTTP"
   vpc_id      = var.vpc_id
 
@@ -97,7 +97,7 @@ resource "aws_lb_listener_rule" "api" {
 
   condition {
     path_pattern {
-      values = ["/v1/*", "/v1"]
+      values = ["/api/*", "/api", "/v1/*"]
     }
   }
 }

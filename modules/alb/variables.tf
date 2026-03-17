@@ -34,12 +34,6 @@ variable "alb_port" {
   default     = 80
 }
 
-variable "api_port" {
-  description = "Port for API backend (container port)"
-  type        = number
-  default     = 3000
-}
-
 variable "health_check_path" {
   description = "Health check path for target groups"
   type        = string

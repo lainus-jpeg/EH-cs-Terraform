@@ -31,7 +31,7 @@ resource "aws_security_group" "app" {
   description = "Security group for application instances"
   vpc_id      = var.apps_vpc_id
 
-  # Allow traffic from ALB on port 80
+  # Allow traffic from ALB (frontend on port 80)
   ingress {
     from_port       = var.alb_port
     to_port         = var.alb_port
@@ -40,13 +40,13 @@ resource "aws_security_group" "app" {
     description     = "Allow HTTP from ALB"
   }
 
-  # Allow API traffic from ALB on port 3000
+  # Allow API traffic from ALB (API on port 8080)
   ingress {
-    from_port       = 3000
-    to_port         = 3000
+    from_port       = 8080
+    to_port         = 8080
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]
-    description     = "Allow API traffic from ALB"
+    description     = "Allow API port from ALB"
   }
 
   # Allow SSH from within VPC (for management)
@@ -129,24 +129,6 @@ resource "aws_security_group" "monitoring" {
     protocol    = "udp"
     cidr_blocks = [var.apps_vpc_cidr]
     description = "Allow all UDP from Apps VPC"
-  }
-
-  # Allow Prometheus port 9090 from Monitoring VPC (for Grafana to query Prometheus)
-  ingress {
-    from_port   = 9090
-    to_port     = 9090
-    protocol    = "tcp"
-    cidr_blocks = [var.monitoring_vpc_cidr]
-    description = "Allow Prometheus from Monitoring VPC"
-  }
-
-  # Allow Grafana port 3000 from internet
-  ingress {
-    from_port   = 3000
-    to_port     = 3000
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "Allow Grafana from internet"
   }
 
   egress {

@@ -149,10 +149,11 @@ output "api_ecr_repository_url" {
   value       = module.ecr.api_repository_url
 }
 
-output "github_oidc_role_arn" {
-  description = "GitHub Actions OIDC role ARN (add to GitHub secrets as AWS_GITHUB_OIDC_ROLE_ARN)"
-  value       = aws_iam_role.github_actions.arn
-}
+# Commented out - GitHub OIDC provider already exists in AWS
+# output "github_oidc_role_arn" {
+#   description = "GitHub Actions OIDC role ARN (add to GitHub secrets as AWS_GITHUB_OIDC_ROLE_ARN)"
+#   value       = aws_iam_role.github_actions.arn
+# }
 
 output "aws_account_id" {
   description = "AWS Account ID (add to GitHub secrets as AWS_ACCOUNT_ID)"

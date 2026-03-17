@@ -1,125 +1,100 @@
 #!/bin/bash
+set -e
+exec > /var/log/user-data.log 2>&1
+exec 2>&1
 
-# Log all output
-exec > >(tee /var/log/user-data.log) 2>&1
+echo "[INFO] Starting Grafana setup at $(date)"
 
-echo "User data script started at $(date)"
+# Update system packages
+echo "[INFO] Updating packages..."
+yum update -y || dnf update -y || true
 
-# Update system
-yum update -y
+# Install Docker
+echo "[INFO] Installing Docker..."
+yum install -y docker || dnf install -y docker
+if [ $? -ne 0 ]; then
+  echo "[ERROR] Failed to install Docker"
+  exit 1
+fi
 
-# Install and enable AWS SSM Agent
-echo "Installing AWS SSM Agent..."
-dnf install -y amazon-ssm-agent || true
-systemctl enable amazon-ssm-agent || true
-systemctl restart amazon-ssm-agent || true
+# Install Docker Compose plugin
+echo "[INFO] Installing Docker Compose plugin..."
+yum install -y docker-compose-plugin || dnf install -y docker-compose-plugin
+if [ $? -ne 0 ]; then
+  echo "[ERROR] Failed to install Docker Compose plugin"
+  exit 1
+fi
 
-# Install Grafana from official repo
-echo "Installing Grafana..."
-cat > /etc/yum.repos.d/grafana.repo << 'EOF'
-[grafana]
-name=grafana
-baseurl=https://rpm.grafana.com
-repo_gpgcheck=1
-enabled=1
-gpgcheck=1
-gpgkey=https://rpm.grafana.com/gpg.key
-sslverify=1
-sslcacert=/etc/pki/tls/certs/ca-bundle.crt
-EOF
-
-dnf install -y grafana
-
-# Create Grafana provisioning directories
-mkdir -p /etc/grafana/provisioning/datasources
-mkdir -p /etc/grafana/provisioning/dashboards
-
-# Create Prometheus datasource configuration
-cat > /etc/grafana/provisioning/datasources/prometheus.yml << EOF
-apiVersion: 1
-datasources:
-  - name: Prometheus
-    type: prometheus
-    access: proxy
-    url: http://${prometheus_ip}:9090
-    isDefault: true
-    editable: true
-    jsonData:
-      timeInterval: 10s
-EOF
-
-# Create dashboard provisioning config
-cat > /etc/grafana/provisioning/dashboards/dashboards.yml << 'EOF'
-apiVersion: 1
-
-providers:
-  - name: 'Default'
-    orgId: 1
-    folder: ''
-    type: file
-    disableDeletion: false
-    updateIntervalSeconds: 10
-    allowUiUpdates: true
-    options:
-      path: /etc/grafana/provisioning/dashboards
-EOF
-
-# Create compact Node Exporter Dashboard
-cat > /etc/grafana/provisioning/dashboards/node-exporter-dashboard.json << 'EOF'
-{"title":"Node Exporter","uid":"node-exporter-dashboard","version":1,"timezone":"","panels":[{"id":1,"type":"row","gridPos":{"h":1,"w":24,"x":0,"y":0},"title":"Row 1 — Availability"},{"id":2,"type":"stat","title":"Targets UP","gridPos":{"h":8,"w":12,"x":0,"y":1},"datasource":"Prometheus","targets":[{"expr":"count(up==1)"}],"options":{"colorMode":"background","graphMode":"none","reduceOptions":{"values":false,"calcs":["lastNotNull"]}},"fieldConfig":{"defaults":{"color":{"mode":"thresholds"}},"overrides":[]}},{"id":3,"type":"stat","title":"Uptime","gridPos":{"h":8,"w":12,"x":12,"y":1},"datasource":"Prometheus","targets":[{"expr":"(time()-max(node_boot_time_seconds))/3600","legendFormat":"hours"}],"options":{"colorMode":"background","graphMode":"none","reduceOptions":{"values":false,"calcs":["lastNotNull"]}},"fieldConfig":{"defaults":{"color":{"mode":"thresholds"},"unit":"h"},"overrides":[]}},{"id":4,"type":"row","gridPos":{"h":1,"w":24,"x":0,"y":9},"title":"Row 2 — Compute"},{"id":5,"type":"timeseries","title":"CPU %","gridPos":{"h":8,"w":8,"x":0,"y":10},"datasource":"Prometheus","targets":[{"expr":"100-(avg by(instance)(irate(node_cpu_seconds_total{mode=\"idle\"}[5m])))*100","legendFormat":"{{instance}}"}],"fieldConfig":{"defaults":{"unit":"percent"},"overrides":[]},"options":{"legend":{"displayMode":"table"}}},{"id":6,"type":"timeseries","title":"Memory %","gridPos":{"h":8,"w":8,"x":8,"y":10},"datasource":"Prometheus","targets":[{"expr":"((node_memory_MemTotal_bytes-node_memory_MemAvailable_bytes)/node_memory_MemTotal_bytes)*100","legendFormat":"{{instance}}"}],"fieldConfig":{"defaults":{"unit":"percent"},"overrides":[]},"options":{"legend":{"displayMode":"table"}}},{"id":7,"type":"timeseries","title":"Disk %","gridPos":{"h":8,"w":8,"x":16,"y":10},"datasource":"Prometheus","targets":[{"expr":"((node_filesystem_size_bytes{fstype!=\"tmpfs\"}-node_filesystem_avail_bytes{fstype!=\"tmpfs\"})/node_filesystem_size_bytes{fstype!=\"tmpfs\"})*100","legendFormat":"{{device}}"}],"fieldConfig":{"defaults":{"unit":"percent"},"overrides":[]},"options":{"legend":{"displayMode":"table"}}},{"id":8,"type":"row","gridPos":{"h":1,"w":24,"x":0,"y":18},"title":"Row 3 — Network"},{"id":9,"type":"timeseries","title":"Network In","gridPos":{"h":8,"w":12,"x":0,"y":19},"datasource":"Prometheus","targets":[{"expr":"rate(node_network_receive_bytes_total{device!=\"lo\"}[5m])","legendFormat":"{{device}}@{{instance}}"}],"fieldConfig":{"defaults":{"unit":"Bps"},"overrides":[]},"options":{"legend":{"displayMode":"table"}}},{"id":10,"type":"timeseries","title":"Network Out","gridPos":{"h":8,"w":12,"x":12,"y":19},"datasource":"Prometheus","targets":[{"expr":"rate(node_network_transmit_bytes_total{device!=\"lo\"}[5m])","legendFormat":"{{device}}@{{instance}}"}],"fieldConfig":{"defaults":{"unit":"Bps"},"overrides":[]},"options":{"legend":{"displayMode":"table"}}}],"refresh":"30s","schemaVersion":27,"style":"dark","tags":["node-exporter"],"templating":{"list":[]},"time":{"from":"now-6h","to":"now"},"timepicker":{}}
-EOF
-EOF
-
-chown -R grafana:grafana /etc/grafana/provisioning
-chmod -R 755 /etc/grafana/provisioning
-chmod 644 /etc/grafana/provisioning/datasources/*.yml
-chmod 644 /etc/grafana/provisioning/dashboards/*.yml
-chmod 644 /etc/grafana/provisioning/dashboards/*.json
-
-# Create Grafana systemd service
+# Enable and start Docker daemon
+echo "[INFO] Enabling and starting Docker service..."
 systemctl daemon-reload
-systemctl enable grafana-server
-systemctl start grafana-server
+systemctl enable docker
+systemctl start docker
 
-# Wait for Grafana to be ready
-sleep 15
+# Wait for Docker to be ready
+echo "[INFO] Waiting for Docker to start..."
+for i in {1..30}; do
+  if docker ps > /dev/null 2>&1; then
+    echo "[INFO] Docker is ready"
+    break
+  fi
+  echo "[INFO] Waiting... ($i/30)"
+  sleep 2
+done
 
-# Check Grafana logs
-echo "=== Grafana Service Status ==="
-systemctl status grafana-server
-echo "=== Grafana Logs ==="
-tail -20 /var/log/grafana/grafana.log || echo "No logs yet"
+# Create Grafana directories
+echo "[INFO] Creating Grafana working directory..."
+mkdir -p /opt/grafana
+chmod 755 /opt/grafana
+cd /opt/grafana
 
-# Install Node Exporter
-echo "Installing Node Exporter..."
-useradd --no-create-home --shell /bin/false node_exporter || true
-cd /tmp
-curl -LO https://github.com/prometheus/node_exporter/releases/download/v1.8.1/node_exporter-1.8.1.linux-amd64.tar.gz
-tar xzf node_exporter-1.8.1.linux-amd64.tar.gz
-cp node_exporter-1.8.1.linux-amd64/node_exporter /usr/local/bin/
-chown node_exporter:node_exporter /usr/local/bin/node_exporter
+# Write docker-compose.yml
+echo "[INFO] Writing docker-compose.yml..."
+cat > docker-compose.yml <<'YAML'
+services:
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    ports:
+      - "0.0.0.0:3000:3000"
+    restart: unless-stopped
+    volumes:
+      - grafana_data:/var/lib/grafana
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
 
-# Node Exporter systemd service
-cat > /etc/systemd/system/node_exporter.service << 'EOF'
-[Unit]
-Description=Node Exporter
-After=network-online.target
-Wants=network-online.target
+volumes:
+  grafana_data:
+YAML
 
-[Service]
-User=node_exporter
-Group=node_exporter
-Type=simple
-ExecStart=/usr/local/bin/node_exporter --web.listen-address=:9100
+# Pull image to cache
+echo "[INFO] Pulling Grafana image..."
+docker pull grafana/grafana:latest
 
-[Install]
-WantedBy=multi-user.target
-EOF
+# Start Grafana
+echo "[INFO] Starting Grafana with docker compose up..."
+docker compose up -d
 
-# Start Node Exporter
-systemctl daemon-reload
-systemctl enable node_exporter
-systemctl start node_exporter
+# Verify container started
+sleep 10
+if docker ps | grep -q grafana; then
+  echo "[INFO] ✓ Grafana container is running"
+else
+  echo "[ERROR] Grafana container failed to start"
+  docker compose logs
+  exit 1
+fi
 
-echo "Grafana available at http://$(hostname -I | awk '{print $1}'):3000"
-echo "User data script completed at $(date)"
+echo "[INFO] Setup complete! Grafana should be accessible at http://<instance-public-ip>:3000"
+echo "[INFO] Default login: admin / admin"
+echo "[INFO] Docker service status:"
+systemctl status docker --no-pager
+echo "[INFO] Grafana container status:"
+docker ps | grep grafana || echo "Container not found!"

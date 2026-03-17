@@ -71,3 +71,9 @@ variable "environment" {
   description = "Environment name"
   type        = string
 }
+
+variable "ecr_repository_name" {
+  description = "ECR repository name to deploy"
+  type        = string
+  default     = "monitoring-apps-frontend"
+}

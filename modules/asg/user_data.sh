@@ -1,276 +1,163 @@
 #!/bin/bash
 
 # Log the startup
-echo "User data script started at $(date)" >> /var/log/user-data.log 2>&1
+LOG_FILE="/var/log/user-data.log"
+echo "User data script started at $(date)" >> $LOG_FILE 2>&1
 
-# Update system
-yum update -y >> /var/log/user-data.log 2>&1
-
-# Install Docker
-amazon-linux-extras install docker -y >> /var/log/user-data.log 2>&1 || echo "docker install failed" >> /var/log/user-data.log
-
-# Start Docker service
-systemctl start docker >> /var/log/user-data.log 2>&1 || echo "docker start failed" >> /var/log/user-data.log
-systemctl enable docker >> /var/log/user-data.log 2>&1 || echo "docker enable failed" >> /var/log/user-data.log
-
-# Install and start SSM Agent for remote access
-echo "Installing SSM Agent..." >> /var/log/user-data.log 2>&1
-yum install -y amazon-ssm-agent >> /var/log/user-data.log 2>&1
-systemctl enable amazon-ssm-agent >> /var/log/user-data.log 2>&1
-systemctl start amazon-ssm-agent >> /var/log/user-data.log 2>&1
-echo "SSM Agent started" >> /var/log/user-data.log 2>&1
-
-# Install AWS CLI v2
-curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" >> /var/log/user-data.log 2>&1
-unzip awscliv2.zip >> /var/log/user-data.log 2>&1
-./aws/install >> /var/log/user-data.log 2>&1
-rm -rf aws awscliv2.zip >> /var/log/user-data.log 2>&1
-
-# Install Node Exporter for Prometheus monitoring
-echo "Installing Node Exporter..." >> /var/log/user-data.log 2>&1
-yum install -y node_exporter >> /var/log/user-data.log 2>&1 || {
-  NODE_EXPORTER_VERSION="1.7.0"
-  NODE_EXPORTER_BINARY="node_exporter-${NODE_EXPORTER_VERSION}.linux-amd64"
-  cd /tmp
-  curl -L "https://github.com/prometheus/node_exporter/releases/download/v${NODE_EXPORTER_VERSION}/${NODE_EXPORTER_BINARY}.tar.gz" -o ${NODE_EXPORTER_BINARY}.tar.gz >> /var/log/user-data.log 2>&1
-  tar xzf ${NODE_EXPORTER_BINARY}.tar.gz >> /var/log/user-data.log 2>&1
-  cp ${NODE_EXPORTER_BINARY}/node_exporter /usr/local/bin/ >> /var/log/user-data.log 2>&1
-  chmod +x /usr/local/bin/node_exporter >> /var/log/user-data.log 2>&1
-  rm -rf ${NODE_EXPORTER_BINARY}* >> /var/log/user-data.log 2>&1
+# Set up logging function
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a $LOG_FILE
 }
 
-# Create Node Exporter systemd service
-cat > /etc/systemd/system/node-exporter.service << 'NODEEOF'
-[Unit]
-Description=Node Exporter
-After=network.target
+log "=== Starting Instance Initialization ==="
 
-[Service]
-Type=simple
-User=nobody
-ExecStart=/usr/local/bin/node_exporter --collector.uname.release=true
-Restart=on-failure
-RestartSec=5
+# Update system
+log "Updating system packages..."
+yum update -y >> $LOG_FILE 2>&1
 
-[Install]
-WantedBy=multi-user.target
-NODEEOF
+# Install Docker
+log "Installing Docker..."
+yum update -y >> $LOG_FILE 2>&1
+yum install -y docker >> $LOG_FILE 2>&1 || { log "Docker installation failed"; exit 1; }
+systemctl start docker >> $LOG_FILE 2>&1
+systemctl enable docker >> $LOG_FILE 2>&1
+usermod -a -G docker ec2-user >> $LOG_FILE 2>&1
 
-systemctl daemon-reload >> /var/log/user-data.log 2>&1
-systemctl start node-exporter >> /var/log/user-data.log 2>&1
-systemctl enable node-exporter >> /var/log/user-data.log 2>&1
-echo "Node Exporter started" >> /var/log/user-data.log 2>&1
+# Verify AWS CLI is available
+log "Verifying AWS CLI..."
+aws --version >> $LOG_FILE 2>&1
 
-# Create deployment script
-cat > /usr/local/bin/deploy-docker.sh << 'EOF'
-#!/bin/bash
+# Deploy application from ECR
+log "=== Starting Application Deployment from ECR ==="
 
-LOG_FILE=/var/log/deploy-docker.log
+# Configuration
+REGION="$${AWS_REGION:-eu-central-1}"
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text --region $REGION 2>/dev/null || echo "")
 
-{
-  echo "Deployment started at $(date)"
-  
-  # Get instance metadata
-  INSTANCE_ID=$(ec2-metadata --instance-id | cut -d " " -f 2)
-  AVAILABILITY_ZONE=$(ec2-metadata --availability-zone | cut -d " " -f 2)
-  REGION=${AVAILABILITY_ZONE%?}  # Remove last character (a/b/c) from AZ
-  
-  echo "Instance ID: $INSTANCE_ID"
-  echo "Region: $REGION"
-  
-  # Wait for tags to propagate (retry up to 30 times, 2 seconds each)
-  # Try Name tag first, then aws:autoscaling:groupName tag
-  INSTANCE_NAME=""
-  ASG_NAME=""
-  
-  for i in {1..30}; do
-    # Get all tags efficiently
-    TAG_DATA=$(aws ec2 describe-instances \
-      --instance-ids "$INSTANCE_ID" \
-      --region "$REGION" \
-      --query 'Reservations[0].Instances[0].Tags' \
-      --output json 2>/dev/null)
+if [ -z "$ACCOUNT_ID" ]; then
+    log "ERROR: Could not retrieve AWS Account ID. EC2 instance may not have proper IAM role."
+    ACCOUNT_ID="697568497210"  # Fallback
+fi
+
+ECR_REGISTRY="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
+REPOSITORY_NAME="${ecr_repository_name}"
+MAX_RETRIES=3
+RETRY_DELAY=10
+
+# Set container and port configuration based on repository type
+if [[ "$REPOSITORY_NAME" == *"api"* ]]; then
+    CONTAINER_NAME="api"
+    CONTAINER_PORT="3000"
+    LOCAL_PORT="8080"
+else
+    CONTAINER_NAME="frontend-app"
+    CONTAINER_PORT="80"
+    LOCAL_PORT="80"
+fi
+
+log "ECR Registry: $ECR_REGISTRY"
+log "Repository: $REPOSITORY_NAME"
+log "Container: $CONTAINER_NAME, Ports: $LOCAL_PORT:$CONTAINER_PORT"
+
+# Login to ECR with retries
+log "Logging into ECR..."
+RETRY_COUNT=0
+until aws ecr get-login-password --region $REGION 2>/dev/null | docker login --username AWS --password-stdin $ECR_REGISTRY >> $LOG_FILE 2>&1; do
+    RETRY_COUNT=$((RETRY_COUNT+1))
+    if [ $RETRY_COUNT -ge 3 ]; then
+        log "ERROR: Failed to login to ECR after 3 attempts. Continuing with httpd fallback..."
+        break
+    fi
+    log "ECR login failed, retrying in $${RETRY_DELAY}s... (Attempt $RETRY_COUNT/3)"
+    sleep $RETRY_DELAY
+done
+
+# Pull and deploy image
+IMAGE_URI="$ECR_REGISTRY/$REPOSITORY_NAME:latest"
+log "Pulling image: $IMAGE_URI"
+
+RETRY_COUNT=0
+until docker pull $IMAGE_URI >> $LOG_FILE 2>&1; do
+    RETRY_COUNT=$((RETRY_COUNT+1))
+    if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
+        log "WARNING: Failed to pull Docker image after $MAX_RETRIES attempts. Starting httpd fallback..."
+        break
+    fi
+    log "Pull failed, retrying in $${RETRY_DELAY}s... (Attempt $RETRY_COUNT/$MAX_RETRIES)"
+    sleep $RETRY_DELAY
+done
+
+# Check if image was pulled successfully
+if docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "$IMAGE_URI"; then
+    log "Image pulled successfully. Stopping any existing container..."
+    docker stop $CONTAINER_NAME 2>/dev/null || true
+    docker rm $CONTAINER_NAME 2>/dev/null || true
     
-    # Extract Name tag value
-    INSTANCE_NAME=$(echo "$TAG_DATA" | grep -o '"Key":"Name"' -A 2 | grep -o '"Value":"[^"]*' | cut -d'"' -f4)
+    # Fetch database credentials from SSM Parameter Store (for API containers)
+    DB_SERVER=""
+    DB_PORT=""
+    DB_NAME=""
+    DB_USER=""
+    DB_PASSWORD=""
     
-    # Extract aws:autoscaling:groupName tag value
-    ASG_NAME=$(echo "$TAG_DATA" | grep -o '"Key":"aws:autoscaling:groupName"' -A 2 | grep -o '"Value":"[^"]*' | cut -d'"' -f4)
-    
-    if [ ! -z "$INSTANCE_NAME" ] || [ ! -z "$ASG_NAME" ]; then
-      [ ! -z "$INSTANCE_NAME" ] && echo "Instance Name tag retrieved: $INSTANCE_NAME"
-      [ ! -z "$ASG_NAME" ] && echo "ASG Name tag retrieved: $ASG_NAME"
-      break
+    if [[ "$REPOSITORY_NAME" == *"api"* ]]; then
+        log "Fetching database credentials from SSM Parameter Store..."
+        DB_SERVER=$(aws ssm get-parameter --name /apps/api/DB_SERVER --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "")
+        DB_PORT=$(aws ssm get-parameter --name /apps/api/DB_PORT --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "5432")
+        DB_NAME=$(aws ssm get-parameter --name /apps/api/DB_NAME --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "appdb")
+        DB_USER=$(aws ssm get-parameter --name /apps/api/DB_USER --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "postgres")
+        DB_PASSWORD=$(aws ssm get-parameter --name /apps/api/DB_PASSWORD --with-decryption --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "")
+        
+        if [ -z "$DB_SERVER" ] || [ -z "$DB_PASSWORD" ]; then
+            log "WARNING: Database credentials not fully loaded from SSM Parameter Store"
+        else
+            log "Database credentials loaded successfully"
+        fi
     fi
     
-    if [ $i -lt 30 ]; then
-      echo "Waiting for tags to propagate... (attempt $i/30)"
-      sleep 2
+    log "Starting application container..."
+    
+    # Build docker run command with optional environment variables
+    DOCKER_RUN_CMD="docker run -d --name $CONTAINER_NAME --restart unless-stopped -p $LOCAL_PORT:$CONTAINER_PORT"
+    
+    if [ -n "$DB_SERVER" ]; then
+        DOCKER_RUN_CMD="$DOCKER_RUN_CMD -e DB_SERVER=\"$DB_SERVER\" -e DB_PORT=\"$DB_PORT\" -e DB_NAME=\"$DB_NAME\" -e DB_USER=\"$DB_USER\" -e DB_PASSWORD=\"$DB_PASSWORD\""
     fi
-  done
-  
-  echo "Final Instance Name: $INSTANCE_NAME"
-  echo "Final ASG Name from tag: $ASG_NAME"
-  
-  # Determine which image to deploy based on instance name or ASG name
-  if [[ "$INSTANCE_NAME" == *"Frontend"* ]]; then
-    PARAM_NAME="/apps/frontend/image-uri"
-    APP_NAME="frontend"
-    APP_PORT="80"
-  elif [[ "$INSTANCE_NAME" == *"API"* ]]; then
-    PARAM_NAME="/apps/api/image-uri"
-    APP_NAME="api"
-    APP_PORT="3000"
-  elif [[ "$ASG_NAME" == *"frontend"* ]]; then
-    PARAM_NAME="/apps/frontend/image-uri"
-    APP_NAME="frontend"
-    APP_PORT="80"
-  elif [[ "$ASG_NAME" == *"api"* ]]; then
-    PARAM_NAME="/apps/api/image-uri"
-    APP_NAME="api"
-    APP_PORT="3000"
-  else
-    echo "ERROR: Could not determine instance type from Name tag: '$INSTANCE_NAME' or ASG tag: '$ASG_NAME'"
-    echo "Attempting last resort: querying ASG API..."
     
-    # Last resort: query ASG directly
-    ASG_NAME=$(aws autoscaling describe-auto-scaling-instances \
-      --region "$REGION" \
-      --query "AutoScalingInstances[?InstanceId=='$INSTANCE_ID'].AutoScalingGroupName" \
-      --output text 2>/dev/null || echo "")
+    DOCKER_RUN_CMD="$DOCKER_RUN_CMD $IMAGE_URI"
     
-    echo "ASG Name from API query: $ASG_NAME"
+    eval $DOCKER_RUN_CMD >> $LOG_FILE 2>&1
     
-    if [[ "$ASG_NAME" == *"frontend"* ]]; then
-      PARAM_NAME="/apps/frontend/image-uri"
-      APP_NAME="frontend"
-      APP_PORT="80"
-    elif [[ "$ASG_NAME" == *"api"* ]]; then
-      PARAM_NAME="/apps/api/image-uri"
-      APP_NAME="api"
-      APP_PORT="3000"
-    else
-      echo "ERROR: Cannot determine app type. Name tag='$INSTANCE_NAME', ASG tag='$ASG_NAME', API ASG='$ASG_NAME'"
-      exit 1
-    fi
-  fi
-  
-  echo "Detected app: $APP_NAME with port $APP_PORT"
-  echo "Parameter name: $PARAM_NAME"
-  
-  # Get image URI from Parameter Store
-  echo "Attempting to retrieve image URI from: $PARAM_NAME"
-  IMAGE_URI=$(aws ssm get-parameter --name "$PARAM_NAME" --region "$REGION" --query 'Parameter.Value' --output text 2>&1)
-  IMAGE_URI_EXIT=$?
-  
-  echo "SSM get-parameter exit code: $IMAGE_URI_EXIT"
-  echo "Retrieved IMAGE_URI: $IMAGE_URI"
-  
-  if [ $IMAGE_URI_EXIT -ne 0 ] || [ -z "$IMAGE_URI" ] || [[ "$IMAGE_URI" == "None" ]]; then
-    echo "WARNING: Failed to get image URI from SSM Parameter Store: $PARAM_NAME"
-    echo "SSM error output: $IMAGE_URI"
-    echo "Using default latest images..."
-    IMAGE_URI="697568497210.dkr.ecr.$REGION.amazonaws.com/monitoring-apps-$APP_NAME:latest"
-    echo "Fallback IMAGE_URI: $IMAGE_URI"
-  fi
-  
-  echo "Final Image URI: $IMAGE_URI"
-  
-  # Get ECR registry
-  ECR_REGISTRY=$(echo $IMAGE_URI | cut -d'/' -f1)
-  
-  # Login to ECR
-  echo "Logging into ECR: $ECR_REGISTRY"
-  aws ecr get-login-password --region "$REGION" 2>/dev/null | docker login --username AWS --password-stdin "$ECR_REGISTRY" >> $LOG_FILE 2>&1
-  
-  if [ $? -ne 0 ]; then
-    echo "WARNING: ECR login failed, but continuing..."
-  fi
-  
-  # Stop existing container if running
-  echo "Stopping existing container: $APP_NAME"
-  docker stop "$APP_NAME" >> $LOG_FILE 2>&1 || true
-  docker rm "$APP_NAME" >> $LOG_FILE 2>&1 || true
-  
-  # Pull and run new image
-  echo "Pulling image: $IMAGE_URI"
-  docker pull "$IMAGE_URI" >> $LOG_FILE 2>&1
-  PULL_EXIT=$?
-  
-  if [ $PULL_EXIT -ne 0 ]; then
-    echo "ERROR: Failed to pull image: $IMAGE_URI (exit code: $PULL_EXIT)"
-    docker images >> $LOG_FILE 2>&1
-    exit 1
-  fi
-  
-  echo "Image pull successful (exit code: $PULL_EXIT)"
-  docker images | grep "$APP_NAME" >> $LOG_FILE 2>&1
-  
-  echo "Running container: $APP_NAME on port $APP_PORT"
-  
-  # For API, get database credentials from SSM Parameter Store
-  if [ "$APP_NAME" == "api" ]; then
-    echo "Retrieving database credentials from SSM Parameter Store..."
-    
-    DB_SERVER=$(aws ssm get-parameter --name "/apps/rds/host" --region "$REGION" --query 'Parameter.Value' --output text 2>/dev/null || echo "localhost")
-    DB_PORT=$(aws ssm get-parameter --name "/apps/rds/port" --region "$REGION" --query 'Parameter.Value' --output text 2>/dev/null || echo "5432")
-    DB_NAME=$(aws ssm get-parameter --name "/apps/rds/dbname" --region "$REGION" --query 'Parameter.Value' --output text 2>/dev/null || echo "appdb")
-    DB_USER=$(aws ssm get-parameter --name "/apps/rds/username" --region "$REGION" --query 'Parameter.Value' --output text 2>/dev/null || echo "postgres")
-    DB_PASSWORD=$(aws ssm get-parameter --name "/apps/rds/password" --region "$REGION" --with-decryption --query 'Parameter.Value' --output text 2>/dev/null || echo "password")
-    
-    echo "DB Connection: host=$DB_SERVER:$DB_PORT, db=$DB_NAME, user=$DB_USER"
-    echo "Running container with database credentials..."
-    
-    docker run -d \
-      --name "$APP_NAME" \
-      -p "$APP_PORT:$APP_PORT" \
-      --restart=always \
-      -e "DB_SERVER=$DB_SERVER" \
-      -e "DB_PORT=$DB_PORT" \
-      -e "DB_NAME=$DB_NAME" \
-      -e "DB_USER=$DB_USER" \
-      -e "DB_PASSWORD=$DB_PASSWORD" \
-      -e "EMAIL_USER=${EMAIL_USER:-}" \
-      -e "EMAIL_PASS=${EMAIL_PASS:-}" \
-      -e "WEBHOOK_URL=${WEBHOOK_URL:-}" \
-      -e "PORT=3000" \
-      "$IMAGE_URI" >> $LOG_FILE 2>&1
-  else
-    # For Frontend, no special env vars needed
-    docker run -d \
-      --name "$APP_NAME" \
-      -p "$APP_PORT:$APP_PORT" \
-      --restart=always \
-      "$IMAGE_URI" >> $LOG_FILE 2>&1
-  fi
-  
-  if [ $? -eq 0 ]; then
-    echo "SUCCESS: Container started successfully"
-    docker ps >> $LOG_FILE
-    echo "Deployment completed at $(date)"
-  else
-    echo "ERROR: Failed to start container"
-    docker logs "$APP_NAME" >> $LOG_FILE 2>&1
-    exit 1
-  fi
-  
-} >> $LOG_FILE 2>&1
+    log "Container started successfully. Application is running."
+else
+    log "WARNING: Could not pull Docker image. Starting httpd fallback..."
+    # Fallback: Install httpd if Docker deployment fails
+    yum install -y httpd >> $LOG_FILE 2>&1
+    mkdir -p /var/www/html
+    cat > /var/www/html/index.html << 'HTMLEOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Application Loading</title>
+</head>
+<body>
+    <h1>Application is initializing...</h1>
+    <p>If you see this message, the Docker image is still being pulled or the deployment is in progress.</p>
+</body>
+</html>
+HTMLEOF
+    systemctl start httpd >> $LOG_FILE 2>&1
+    systemctl enable httpd >> $LOG_FILE 2>&1
+fi
 
-EOF
+# --- Node Exporter (for Prometheus) ---
+log "Setting up Node Exporter..."
+useradd --no-create-home --shell /bin/false node_exporter 2>/dev/null || true
 
-chmod +x /usr/local/bin/deploy-docker.sh
-echo "Deployment script created" >> /var/log/user-data.log 2>&1
-
-# Run deployment for the first time
-/usr/local/bin/deploy-docker.sh >> /var/log/user-data.log 2>&1
-
-# --- Install Node Exporter (for Prometheus) ---
-useradd --no-create-home --shell /bin/false node_exporter || true
-
-curl -LO https://github.com/prometheus/node_exporter/releases/download/v1.8.1/node_exporter-1.8.1.linux-amd64.tar.gz >> /var/log/user-data.log 2>&1 || echo "node_exporter download failed" >> /var/log/user-data.log
-tar xzf node_exporter-1.8.1.linux-amd64.tar.gz >> /var/log/user-data.log 2>&1 || echo "node_exporter tar failed" >> /var/log/user-data.log
-cp node_exporter-1.8.1.linux-amd64/node_exporter /usr/local/bin/ >> /var/log/user-data.log 2>&1 || echo "node_exporter copy failed" >> /var/log/user-data.log
-chown node_exporter:node_exporter /usr/local/bin/node_exporter >> /var/log/user-data.log 2>&1 || echo "node_exporter chown failed" >> /var/log/user-data.log
+curl -LO https://github.com/prometheus/node_exporter/releases/download/v1.8.1/node_exporter-1.8.1.linux-amd64.tar.gz >> $LOG_FILE 2>&1 || { log "node_exporter download failed"; }
+tar xzf node_exporter-1.8.1.linux-amd64.tar.gz >> $LOG_FILE 2>&1 || { log "node_exporter tar failed"; }
+cp node_exporter-1.8.1.linux-amd64/node_exporter /usr/local/bin/ >> $LOG_FILE 2>&1 || { log "node_exporter copy failed"; }
+chown node_exporter:node_exporter /usr/local/bin/node_exporter >> $LOG_FILE 2>&1 || { log "node_exporter chown failed"; }
 
 cat >/etc/systemd/system/node_exporter.service <<'EOFNE'
 [Unit]
