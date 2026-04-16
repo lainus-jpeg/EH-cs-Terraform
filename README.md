@@ -129,6 +129,82 @@ terraform output alb_dns_name
 
 View alerts at: **Prometheus → Alerts**
 
+## SOAR - Security Orchestration, Automation and Response
+
+Automated security incident response system that processes Prometheus/Alertmanager alerts and takes automatic action.
+
+### Components
+
+- **API Gateway Webhook**: Receives alerts from Alertmanager at `https://<api-gateway-url>/dev/alerts`
+- **Lambda Function**: Parses alerts, sends notifications, and triggers WAF IP blocks
+- **SNS Topic**: Sends email notifications to configured recipients
+- **WAF IP Blocklist**: Automatically blocks malicious IPs based on alert severity
+- **Web ACL**: Protects ALB with AWS Managed Rules and SOAR-managed IP blocks
+
+### Alert Response Flow
+
+| Severity | Action |
+|----------|--------|
+| Low/Medium | Email notification via SNS |
+| High/Critical | Email notification + automatic WAF IP block |
+
+### Configuration
+
+#### 1. Verify Email in SES
+Before deploying SOAR, verify an email address in AWS SES (eu-central-1):
+- AWS Console → SES → Verified identities → Create identity
+- Verify the email address via confirmation link
+
+#### 2. Set Terraform Variables
+In `terraform.tfvars`:
+```hcl
+ses_from_email = "your-verified-email@example.com"  # Verified SES email
+alert_email    = "recipient@example.com"             # Where to send alerts
+```
+
+#### 3. Configure Alertmanager
+Add the SOAR webhook to Prometheus Alertmanager (`prometheus.yml`):
+```yaml
+global:
+  resolve_timeout: 5m
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+route:
+  receiver: 'soar'
+  group_by: ['alertname']
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 12h
+  routes:
+    - receiver: 'soar'
+
+receivers:
+  - name: 'soar'
+    webhook_configs:
+      - url: 'https://<soar-webhook-url>/dev/alerts'
+```
+
+### Outputs
+
+After deployment, get these values from Terraform outputs:
+```bash
+terraform output soar_webhook_url        # For Alertmanager configuration
+terraform output soar_waf_ip_set_id      # WAF IP blocklist ID
+terraform output soar_waf_web_acl_arn    # Web ACL protecting ALB
+```
+
+### Monitoring & Verification
+
+- **CloudWatch Logs**: Lambda execution logs in `/aws/lambda/soar-handler`
+- **WAF Dashboard**: View blocked IPs and traffic in AWS WAF Console
+- **Email Delivery**: SNS sends alerts to verified email addresses
+
+See [SOAR-SETUP.md](./SOAR-SETUP.md) for detailed setup and troubleshooting.
+
 ## Key Variables (terraform.tfvars)
 
 - `aws_region`: eu-central-1
