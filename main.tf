@@ -1,3 +1,85 @@
+# GitHub Actions OIDC Provider
+resource "aws_iam_openid_connect_provider" "github" {
+  url             = "https://token.actions.githubusercontent.com"
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1"]
+
+  tags = {
+    Name = "github-actions-oidc"
+  }
+}
+
+# GitHub Actions IAM Role for ECR Push
+resource "aws_iam_role" "github_actions_ecr_push" {
+  name = "github-actions-ecr-push"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = aws_iam_openid_connect_provider.github.arn
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          }
+          StringLike = {
+            "token.actions.githubusercontent.com:sub" = [
+              "repo:lainus-jpeg/EH-cs1-api:ref:refs/heads/main",
+              "repo:lainus-jpeg/EH-cs1-api:ref:refs/heads/develop",
+              "repo:lainus-jpeg/EH-cs1-frontend:ref:refs/heads/main",
+              "repo:lainus-jpeg/EH-cs1-frontend:ref:refs/heads/develop",
+            ]
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name = "github-actions-ecr-push"
+  }
+}
+
+# Permissions for GitHub Actions to push to ECR
+resource "aws_iam_role_policy" "github_actions_ecr_push_policy" {
+  name = "github-actions-ecr-push-policy"
+  role = aws_iam_role.github_actions_ecr_push.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage",
+          "ecr:GetAuthorizationToken",
+          "ecr:DescribeImages",
+          "ecr:DescribeRepositories",
+          "ecr:PutImage",
+          "ecr:InitiateLayerUpload",
+          "ecr:UploadLayerPart",
+          "ecr:CompleteLayerUpload",
+          "ecr:BatchCheckLayerAvailability"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ssm:PutParameter",
+          "ssm:GetParameter"
+        ]
+        Resource = "arn:aws:ssm:*:*:parameter/apps/*"
+      }
+    ]
+  })
+}
+
 # Monitoring VPC Module
 module "monitoring_vpc" {
   source = "./modules/vpc"
@@ -184,6 +266,19 @@ module "monitoring" {
   environment = var.environment
 }
 
+# SOAR Module (Security Orchestration, Automation and Response)
+module "soar" {
+  source = "./modules/soar"
+
+  environment         = var.environment
+  aws_region          = var.aws_region
+  ses_from_email      = var.ses_from_email
+  alert_email         = var.alert_email
+  waf_ip_set_name     = var.waf_ip_set_name
+  require_api_key     = var.require_api_key
+  log_retention_days  = var.log_retention_days
+}
+
 # ECR Module
 module "ecr" {
   source = "./modules/ecr"
@@ -215,6 +310,7 @@ resource "aws_ssm_parameter" "frontend_image_uri" {
   description     = "Frontend Docker image URI in ECR"
   type            = "String"
   value           = "${module.ecr.frontend_repository_url}:latest"
+  overwrite       = true
   tier            = "Standard"
   
   tags = {
@@ -228,10 +324,97 @@ resource "aws_ssm_parameter" "api_image_uri" {
   description     = "API Docker image URI in ECR"
   type            = "String"
   value           = "${module.ecr.api_repository_url}:latest"
+  overwrite       = true
   tier            = "Standard"
   
   tags = {
     Name = "api-image-uri"
+    Environment = var.environment
+  }
+}
+
+# SSM Parameters for Database Credentials
+resource "aws_ssm_parameter" "db_server" {
+  name            = "/apps/api/DB_SERVER"
+  description     = "RDS database server address"
+  type            = "String"
+  value           = module.rds.rds_address
+  overwrite       = true
+  tier            = "Standard"
+  
+  tags = {
+    Name = "db-server"
+    Environment = var.environment
+  }
+}
+
+resource "aws_ssm_parameter" "db_port" {
+  name            = "/apps/api/DB_PORT"
+  description     = "RDS database port"
+  type            = "String"
+  value           = tostring(module.rds.rds_port)
+  overwrite       = true
+  tier            = "Standard"
+  
+  tags = {
+    Name = "db-port"
+    Environment = var.environment
+  }
+}
+
+resource "aws_ssm_parameter" "db_name" {
+  name            = "/apps/api/DB_NAME"
+  description     = "RDS database name"
+  type            = "String"
+  value           = module.rds.rds_database_name
+  overwrite       = true
+  tier            = "Standard"
+  
+  tags = {
+    Name = "db-name"
+    Environment = var.environment
+  }
+}
+
+resource "aws_ssm_parameter" "db_user" {
+  name            = "/apps/api/DB_USER"
+  description     = "RDS database username"
+  type            = "String"
+  value           = module.rds.rds_username
+  overwrite       = true
+  tier            = "Standard"
+  
+  tags = {
+    Name = "db-user"
+    Environment = var.environment
+  }
+}
+
+resource "aws_ssm_parameter" "db_password" {
+  name            = "/apps/api/DB_PASSWORD"
+  description     = "RDS database password"
+  type            = "SecureString"
+  value           = module.rds.rds_password
+  overwrite       = true
+  tier            = "Standard"
+  
+  tags = {
+    Name = "db-password"
+    Environment = var.environment
+  }
+}
+
+# SOAR Webhook URL for failed login alerts
+resource "aws_ssm_parameter" "soar_webhook_url" {
+  name            = "/apps/api/SOAR_WEBHOOK_URL"
+  description     = "SOAR webhook URL for security alerts"
+  type            = "String"
+  value           = module.soar.webhook_url
+  overwrite       = true
+  tier            = "Standard"
+  
+  tags = {
+    Name = "soar-webhook-url"
     Environment = var.environment
   }
 }

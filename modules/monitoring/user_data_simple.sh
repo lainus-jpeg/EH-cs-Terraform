@@ -106,6 +106,25 @@ groups:
         annotations:
           summary: "Disk almost full on {{ $labels.instance }}"
           description: "Disk usage is {{ $value | humanize }}% on {{ $labels.instance }}"
+
+      - alert: DDoSAttackDetected
+        expr: rate(node_network_receive_bytes_total{device=~"eth0|ens.*"}[5m]) > 100000000
+        for: 3m
+        labels:
+          severity: critical
+          attack_type: "DDoS"
+        annotations:
+          summary: "Potential DDoS attack detected on {{ $labels.instance }}"
+          description: "Network traffic exceeds threshold: {{ $value | humanize }}B/s on device {{ $labels.device }} for 3 minutes"
+
+      - alert: ExcessiveNetworkTraffic
+        expr: rate(node_network_receive_bytes_total{device=~"eth0|ens.*"}[5m]) > 50000000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Excessive network traffic on {{ $labels.instance }}"
+          description: "Network receive rate is {{ $value | humanize }}B/s on device {{ $labels.device }}"
 EOF
 
 chown prometheus:prometheus /etc/prometheus/prometheus.yml /etc/prometheus/alerts.yml

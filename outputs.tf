@@ -149,6 +149,11 @@ output "api_ecr_repository_url" {
   value       = module.ecr.api_repository_url
 }
 
+output "github_oidc_role_arn" {
+  description = "GitHub Actions OIDC Role ARN for ECR push"
+  value       = aws_iam_role.github_actions_ecr_push.arn
+}
+
 output "aws_account_id" {
   description = "AWS Account ID (add to GitHub secrets as AWS_ACCOUNT_ID)"
   value       = data.aws_caller_identity.current.account_id
@@ -162,4 +167,50 @@ output "aws_region" {
 output "ci_cd_setup_documentation" {
   description = "Path to CI/CD setup documentation"
   value       = "See CI-CD-SETUP.md in the terraform directory for complete setup instructions"
+}
+
+# SOAR Outputs
+output "soar_webhook_url" {
+  description = "Webhook URL for Prometheus Alertmanager to send alerts to SOAR Lambda"
+  value       = module.soar.webhook_url
+}
+
+output "soar_lambda_function_arn" {
+  description = "ARN of SOAR Lambda function"
+  value       = module.soar.lambda_function_arn
+}
+
+output "soar_sns_topic_arn" {
+  description = "ARN of SNS topic for SOAR alerts"
+  value       = module.soar.sns_topic_arn
+}
+
+output "soar_api_gateway_id" {
+  description = "API Gateway ID for SOAR webhook"
+  value       = module.soar.api_gateway_id
+}
+
+output "soar_waf_ip_set_id" {
+  description = "WAFv2 IP Set ID created for SOAR blocklist"
+  value       = module.soar.waf_ip_set_id
+}
+
+output "soar_waf_ip_set_arn" {
+  description = "WAFv2 IP Set ARN for SOAR blocklist"
+  value       = module.soar.waf_ip_set_arn
+}
+
+output "soar_waf_ip_set_name" {
+  description = "WAFv2 IP Set name for SOAR blocklist"
+  value       = module.soar.waf_ip_set_name
+}
+
+output "soar_waf_web_acl_arn" {
+  description = "WAFv2 Web ACL ARN protecting ALB with SOAR blocklist rules"
+  value       = aws_wafv2_web_acl.alb_waf.arn
+}
+
+output "soar_waf_web_acl_id" {
+  description = "WAFv2 Web ACL ID protecting ALB"
+  value       = aws_wafv2_web_acl.alb_waf.id
 }

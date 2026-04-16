@@ -215,3 +215,34 @@ variable "apps_enable_nat_gateway" {
   type        = bool
   default     = true
 }
+
+# SOAR Variables (Security Orchestration, Automation and Response)
+variable "ses_from_email" {
+  description = "SES verified email address for sending alerts"
+  type        = string
+  default     = ""
+}
+
+variable "alert_email" {
+  description = "Email address to receive security alerts"
+  type        = string
+  default     = "526307@student.fontys.nl"
+}
+
+variable "waf_ip_set_name" {
+  description = "Name of the AWS WAFv2 IP set for blocklist (will be created)"
+  type        = string
+  default     = "soar-blocklist"
+}
+
+variable "require_api_key" {
+  description = "Require API key for webhook"
+  type        = bool
+  default     = false
+}
+
+variable "log_retention_days" {
+  description = "CloudWatch log retention in days"
+  type        = number
+  default     = 7
+}

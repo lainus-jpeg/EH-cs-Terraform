@@ -5,6 +5,13 @@ exec 2>&1
 
 echo "[INFO] Starting Grafana setup at $(date)"
 
+# Install and enable AWS SSM Agent FIRST
+echo "[INFO] Installing AWS SSM Agent..."
+dnf install -y amazon-ssm-agent || yum install -y amazon-ssm-agent || true
+systemctl enable amazon-ssm-agent || true
+systemctl start amazon-ssm-agent || true
+systemctl status amazon-ssm-agent || echo "[WARN] SSM agent status check failed"
+
 # Update system packages
 echo "[INFO] Updating packages..."
 yum update -y || dnf update -y || true

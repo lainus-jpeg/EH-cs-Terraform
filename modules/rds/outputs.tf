@@ -33,3 +33,14 @@ output "db_subnet_group_name" {
   description = "Name of the DB subnet group"
   value       = aws_db_subnet_group.main.name
 }
+
+output "rds_username" {
+  description = "The master username for the database"
+  value       = aws_db_instance.main.username
+}
+
+output "rds_password" {
+  description = "The master password for the database"
+  value       = random_password.rds_password.result
+  sensitive   = true
+}

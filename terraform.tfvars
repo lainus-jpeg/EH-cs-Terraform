@@ -46,3 +46,10 @@ health_check_unhealthy_threshold   = 3
 
 # VPC Peering
 enable_vpc_peering = true
+
+# SOAR Configuration (Security Orchestration, Automation and Response)
+ses_from_email  = "lianderjimenez420@gmail.com"
+alert_email     = "lianderjimenez420@gmail.com"
+waf_ip_set_name = "soar-blocklist"
+require_api_key = false
+log_retention_days = 7

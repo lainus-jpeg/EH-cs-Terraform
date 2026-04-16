@@ -15,9 +15,14 @@ log "=== Starting Instance Initialization ==="
 log "Updating system packages..."
 yum update -y >> $LOG_FILE 2>&1
 
+# Install and start SSM Agent
+log "Installing SSM Agent..."
+yum install -y amazon-ssm-agent >> $LOG_FILE 2>&1
+systemctl start amazon-ssm-agent >> $LOG_FILE 2>&1
+systemctl enable amazon-ssm-agent >> $LOG_FILE 2>&1
+
 # Install Docker
 log "Installing Docker..."
-yum update -y >> $LOG_FILE 2>&1
 yum install -y docker >> $LOG_FILE 2>&1 || { log "Docker installation failed"; exit 1; }
 systemctl start docker >> $LOG_FILE 2>&1
 systemctl enable docker >> $LOG_FILE 2>&1
@@ -31,16 +36,26 @@ aws --version >> $LOG_FILE 2>&1
 log "=== Starting Application Deployment from ECR ==="
 
 # Configuration
-REGION="$${AWS_REGION:-eu-central-1}"
+REGION="eu-central-1"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text --region $REGION 2>/dev/null || echo "")
 
 if [ -z "$ACCOUNT_ID" ]; then
     log "ERROR: Could not retrieve AWS Account ID. EC2 instance may not have proper IAM role."
-    ACCOUNT_ID="697568497210"  # Fallback
+    exit 1
 fi
 
 ECR_REGISTRY="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
-REPOSITORY_NAME="${ecr_repository_name}"
+
+# Detect repository name from instance tags
+INSTANCE_ID=$(ec2-metadata --instance-id | cut -d " " -f 2)
+INSTANCE_NAME=$(aws ec2 describe-tags --filters "Name=resource-id,Values=$INSTANCE_ID" "Name=key,Values=Name" --region $REGION --query 'Tags[0].Value' --output text 2>/dev/null || echo "")
+
+if [[ "$INSTANCE_NAME" == *"Frontend"* ]] || [[ "$INSTANCE_NAME" == *"frontend"* ]]; then
+    REPOSITORY_NAME="monitoring-apps-frontend"
+else
+    REPOSITORY_NAME="monitoring-apps-api"
+fi
+
 MAX_RETRIES=3
 RETRY_DELAY=10
 
@@ -68,7 +83,7 @@ until aws ecr get-login-password --region $REGION 2>/dev/null | docker login --u
         log "ERROR: Failed to login to ECR after 3 attempts. Continuing with httpd fallback..."
         break
     fi
-    log "ECR login failed, retrying in $${RETRY_DELAY}s... (Attempt $RETRY_COUNT/3)"
+    log "ECR login failed, retrying in $RETRY_DELAY seconds... (Attempt $RETRY_COUNT/3)"
     sleep $RETRY_DELAY
 done
 
@@ -83,7 +98,7 @@ until docker pull $IMAGE_URI >> $LOG_FILE 2>&1; do
         log "WARNING: Failed to pull Docker image after $MAX_RETRIES attempts. Starting httpd fallback..."
         break
     fi
-    log "Pull failed, retrying in $${RETRY_DELAY}s... (Attempt $RETRY_COUNT/$MAX_RETRIES)"
+    log "Pull failed, retrying in $RETRY_DELAY seconds... (Attempt $RETRY_COUNT/$MAX_RETRIES)"
     sleep $RETRY_DELAY
 done
 
@@ -93,12 +108,13 @@ if docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "$IMAGE_URI"; the
     docker stop $CONTAINER_NAME 2>/dev/null || true
     docker rm $CONTAINER_NAME 2>/dev/null || true
     
-    # Fetch database credentials from SSM Parameter Store (for API containers)
+    # Fetch database credentials and SOAR webhook URL from SSM Parameter Store (for API containers)
     DB_SERVER=""
     DB_PORT=""
     DB_NAME=""
     DB_USER=""
     DB_PASSWORD=""
+    SOAR_WEBHOOK_URL=""
     
     if [[ "$REPOSITORY_NAME" == *"api"* ]]; then
         log "Fetching database credentials from SSM Parameter Store..."
@@ -107,11 +123,18 @@ if docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "$IMAGE_URI"; the
         DB_NAME=$(aws ssm get-parameter --name /apps/api/DB_NAME --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "appdb")
         DB_USER=$(aws ssm get-parameter --name /apps/api/DB_USER --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "postgres")
         DB_PASSWORD=$(aws ssm get-parameter --name /apps/api/DB_PASSWORD --with-decryption --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "")
+        SOAR_WEBHOOK_URL=$(aws ssm get-parameter --name /apps/api/SOAR_WEBHOOK_URL --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "")
         
         if [ -z "$DB_SERVER" ] || [ -z "$DB_PASSWORD" ]; then
             log "WARNING: Database credentials not fully loaded from SSM Parameter Store"
         else
             log "Database credentials loaded successfully"
+        fi
+        
+        if [ -z "$SOAR_WEBHOOK_URL" ]; then
+            log "WARNING: SOAR_WEBHOOK_URL not loaded from SSM Parameter Store"
+        else
+            log "SOAR webhook URL loaded successfully"
         fi
     fi
     
@@ -122,6 +145,10 @@ if docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "$IMAGE_URI"; the
     
     if [ -n "$DB_SERVER" ]; then
         DOCKER_RUN_CMD="$DOCKER_RUN_CMD -e DB_SERVER=\"$DB_SERVER\" -e DB_PORT=\"$DB_PORT\" -e DB_NAME=\"$DB_NAME\" -e DB_USER=\"$DB_USER\" -e DB_PASSWORD=\"$DB_PASSWORD\""
+    fi
+    
+    if [ -n "$SOAR_WEBHOOK_URL" ]; then
+        DOCKER_RUN_CMD="$DOCKER_RUN_CMD -e SOAR_WEBHOOK_URL=\"$SOAR_WEBHOOK_URL\""
     fi
     
     DOCKER_RUN_CMD="$DOCKER_RUN_CMD $IMAGE_URI"
